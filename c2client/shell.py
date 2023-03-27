@@ -53,7 +53,7 @@ def configure_boto(verify):
 
 
 def exitcode(func):
-    """Wrapper for logging any catched exception."""
+    """Wrapper for logging any caught exception."""
 
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -146,70 +146,34 @@ def ct_main():
 def eks_main():
     """Main function for EKS API Client."""
 
-    action, args, verify = parse_arguments("c2-eks")
-
-    for key, value in args.items():
-        if value.isdigit():
-            args[key] = int(value)
-        elif value.lower() == "true":
-            args[key] = True
-        elif value.lower() == "false":
-            args[key] = False
-
-    eks_endpoint = get_env_var("EKS_URL")
-
-    aws_access_key_id = get_env_var("AWS_ACCESS_KEY_ID")
-    aws_secret_access_key = get_env_var("AWS_SECRET_ACCESS_KEY")
-
-    eks_client = get_boto3_client("eks", eks_endpoint, aws_access_key_id, aws_secret_access_key, verify)
-
-    result = getattr(eks_client, inflection.underscore(action))(**from_dot_notation(args))
-
-    result.pop("ResponseMetadata", None)
-
-    print(json.dumps(result, indent=4, sort_keys=True))
+    handle("c2-eks", "EKS_URL", "eks")
 
 
 @exitcode
 def autoscaling_main():
     """Main function for Auto Scaling API Client."""
 
-    action, args, verify = parse_arguments("c2-as")
-
-    for key, value in args.items():
-        if value.isdigit():
-            args[key] = int(value)
-        elif value.lower() == "true":
-            args[key] = True
-        elif value.lower() == "false":
-            args[key] = False
-
-    auto_scaling_endpoint = get_env_var("AUTO_SCALING_URL")
-
-    aws_access_key_id = get_env_var("AWS_ACCESS_KEY_ID")
-    aws_secret_access_key = get_env_var("AWS_SECRET_ACCESS_KEY")
-
-    auto_scaling_client = get_boto3_client("autoscaling", auto_scaling_endpoint, aws_access_key_id,
-                                           aws_secret_access_key, verify)
-
-    result = getattr(auto_scaling_client, inflection.underscore(action))(**from_dot_notation(args))
-
-    result.pop("ResponseMetadata", None)
-
-    print(json.dumps(result, indent=4, sort_keys=True))
+    handle("c2-as", "AUTO_SCALING_URL", "autoscaling")
 
 
 @exitcode
 def elb_main():
     """Main function for Elastic Load Balancer API Client."""
 
-    action, args, verify = parse_arguments("c2-elb")
+    handle("c2-elb", "ELB_URL", "elbv2")
 
-    def serialize_datetime(obj):
-        """Default datetime serializer."""
 
-        if isinstance(obj, datetime.datetime):
-            return str(obj)
+@exitcode
+def bs_main():
+    """Main function for Backup API Client."""
+
+    handle("c2-bs", "BS_URL", "backup")
+
+
+def handle(program, url_key, client_name):
+    """Main function for services using boto3 client."""
+
+    action, args, verify = parse_arguments(program)
 
     for key, value in args.items():
         if value.isdigit():
@@ -219,18 +183,18 @@ def elb_main():
         elif value.lower() == "false":
             args[key] = False
 
-    elb_endpoint = get_env_var("ELB_URL")
+    endpoint = get_env_var(url_key)
 
     aws_access_key_id = get_env_var("AWS_ACCESS_KEY_ID")
     aws_secret_access_key = get_env_var("AWS_SECRET_ACCESS_KEY")
 
-    elb_client = get_boto3_client("elbv2", elb_endpoint,
-                                  aws_access_key_id,
-                                  aws_secret_access_key,
-                                  verify)
+    client = get_boto3_client(client_name, endpoint,
+                              aws_access_key_id,
+                              aws_secret_access_key,
+                              verify)
 
-    result = getattr(elb_client, inflection.underscore(action))(**from_dot_notation(args))
+    result = getattr(client, inflection.underscore(action))(**from_dot_notation(args))
 
     result.pop("ResponseMetadata", None)
 
-    print(json.dumps(result, indent=4, sort_keys=True, default=serialize_datetime))
+    print(json.dumps(result, indent=4, sort_keys=True, default=str))

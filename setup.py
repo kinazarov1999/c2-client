@@ -53,6 +53,7 @@ setup(
             "c2-eks = c2client.shell:eks_main",
             "c2-as = c2client.shell:autoscaling_main",
             "c2-elb = c2client.shell:elb_main",
+            "c2-bs = c2client.shell:bs_main",
             "c2rc-convert = c2client.c2rc_convert:main",
         ]
     },
