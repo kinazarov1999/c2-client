@@ -2,7 +2,6 @@ from __future__ import print_function, unicode_literals
 
 import argparse
 import codecs
-import datetime
 import json
 import os
 import ssl
@@ -14,8 +13,8 @@ import inflection
 
 from functools import wraps
 
-from c2client.compat import get_connection
-from c2client.utils import prettify_xml, from_dot_notation, get_env_var
+from c2client.compat import get_service_things
+from c2client.utils import from_dot_notation, get_env_var
 
 # Nasty hack to workaround default ascii codec
 if sys.version_info[0] < 3:
@@ -76,125 +75,140 @@ def parse_arguments(program):
         "--no-verify-ssl",
         action="store_false",
         help="disable verifying ssl certificate",
-        required=False)
-    parser.add_argument("parameters", nargs="*",
-        help="Any parameters for the action. "
-             "Parameters specified by parameter key and "
-             "parameter value separated by space.")
-    args = parser.parse_args()
-
-    params = args.parameters
-    no_verify_ssl = args.no_verify_ssl
-    parameters = dict(zip(params[::2], params[1::2]))
-
-    return args.action, parameters, no_verify_ssl
-
-
-@exitcode
-def ec2_main():
-    """Main function for EC2 API Client."""
-
-    action, args, verify = parse_arguments("c2-ec2")
-
-    configure_boto(verify)
-    ec2_endpoint = get_env_var("EC2_URL")
-
-    connection = get_connection("ec2", ec2_endpoint)
-    response = connection.make_request(action, args)
-
-    print(prettify_xml(response.read()))
+        required=False,
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Read json from argument or from stdin instead of paris of parameters.",
+        required=False,
+    )
+    parser.add_argument(
+        "parameters",
+        nargs="*",
+        help=(
+            "Any parameters for the action. "
+            "Parameters specified by parameter key and "
+            "parameter value separated by space."
+        ),
+    )
+    return parser.parse_args()
 
 
-@exitcode
-def cw_main():
-    """Main function for CloudWatch API Client."""
-
-    action, args, verify = parse_arguments("c2-cw")
-
-    configure_boto(verify)
-    cloudwatch_endpoint = get_env_var("AWS_CLOUDWATCH_URL")
-
-    connection = get_connection("cw", cloudwatch_endpoint)
-    response = connection.make_request(action, args)
-
-    print(prettify_xml(response.read()))
+def read_json(params):
+    if params:
+        json_str = params[0]
+        if json_str == "-":
+            json_str = sys.stdin.read()
+        return json.loads(json_str)
+    return {}
 
 
-@exitcode
-def ct_main():
-    """Main function for CloudTrail API Client."""
+def read_string(params):
+    if params:
+        params_str = params[0]
+        if params_str == "-":
+            params_str = sys.stdin.read()
+        return params_str
+    return ""
 
-    action, args, verify = parse_arguments("c2-ct")
+
+def compat_handle(program, url_key, client_name):
+    """Main function for services using old boto client."""
+
+    args = parse_arguments(program)
+    action = args.action
+    verify = args.no_verify_ssl
 
     configure_boto(verify)
-    cloudtrail_endpoint = get_env_var("AWS_CLOUDTRAIL_URL")
+    endpoint = get_env_var(url_key)
 
-    connection = get_connection("ct", cloudtrail_endpoint)
-    if "MaxResults" in args:
-        args["MaxResults"] = int(args["MaxResults"])
-    if "StartTime" in args:
-        args["StartTime"] = int(args["StartTime"])
-    if "EndTime" in args:
-        args["EndTime"] = int(args["EndTime"])
+    if not args.json:
+        parameters = dict(zip(args.parameters[::2], args.parameters[1::2]))
+        connection, parameters_transformer, response_printer = get_service_things(
+            client_name, endpoint
+        )
+        if parameters_transformer:
+            parameters_transformer(parameters)
+        dict_parameters = from_dot_notation(parameters)
+        string_parameters = json.dumps(dict_parameters)
+    else:
+        string_parameters = read_string(args.parameters)
 
-    response = connection.make_request(action, json.dumps(from_dot_notation(args)))
+    response = connection.make_request(action, string_parameters)
 
-    print(json.dumps(response, indent=4, sort_keys=True))
-
-
-@exitcode
-def eks_main():
-    """Main function for EKS API Client."""
-
-    handle("c2-eks", "EKS_URL", "eks")
-
-
-@exitcode
-def autoscaling_main():
-    """Main function for Auto Scaling API Client."""
-
-    handle("c2-as", "AUTO_SCALING_URL", "autoscaling")
-
-
-@exitcode
-def elb_main():
-    """Main function for Elastic Load Balancer API Client."""
-
-    handle("c2-elb", "ELB_URL", "elbv2")
-
-
-@exitcode
-def bs_main():
-    """Main function for Backup API Client."""
-
-    handle("c2-bs", "BS_URL", "backup")
+    response_printer(response)
 
 
 def handle(program, url_key, client_name):
     """Main function for services using boto3 client."""
 
-    action, args, verify = parse_arguments(program)
-
-    for key, value in args.items():
-        if value.isdigit():
-            args[key] = int(value)
-        elif value.lower() == "true":
-            args[key] = True
-        elif value.lower() == "false":
-            args[key] = False
+    args = parse_arguments(program)
+    action = args.action
+    verify = args.no_verify_ssl
 
     endpoint = get_env_var(url_key)
+
+    if not args.json:
+        parameters = dict(zip(args.parameters[::2], args.parameters[1::2]))
+        for key, value in parameters.items():
+            if value.isdigit():
+                parameters[key] = int(value)
+            elif value.lower() == "true":
+                parameters[key] = True
+            elif value.lower() == "false":
+                parameters[key] = False
+        dict_parameters = from_dot_notation(parameters)
+    else:
+        dict_parameters = read_json(args.parameters)
 
     aws_access_key_id = get_env_var("AWS_ACCESS_KEY_ID")
     aws_secret_access_key = get_env_var("AWS_SECRET_ACCESS_KEY")
 
-    client = get_boto3_client(client_name, endpoint,
-                              aws_access_key_id,
-                              aws_secret_access_key,
-                              verify)
+    client = get_boto3_client(
+        client_name,
+        endpoint,
+        aws_access_key_id,
+        aws_secret_access_key,
+        verify,
+    )
 
-    result = getattr(client, inflection.underscore(action))(**from_dot_notation(args))
+    client_method = getattr(client, inflection.underscore(action))
+    result = client_method(**dict_parameters)
 
     result.pop("ResponseMetadata", None)
 
     print(json.dumps(result, indent=4, sort_keys=True, default=str))
+
+
+def prepare_func(func, prog_name, url_key, client_name):
+
+    @exitcode
+    def generated_func():
+        return func(prog_name, url_key, client_name)
+
+    return generated_func
+
+
+entry_points = {
+    compat_handle: (
+        # name, url_key, client_name
+        ("ec2", "EC2_URL", "ec2"),
+        ("cw", "AWS_CLOUDWATCH_URL", "cw"),
+        ("ct", "AWS_CLOUDTRAIL_URL", "ct"),
+    ),
+    handle: (
+        # name, url_key, client_name
+        ("eks", "EKS_URL", "eks"),
+        ("as", "AUTO_SCALING_URL", "autoscaling"),
+        ("elb", "ELB_URL", "elbv2"),
+        ("bs", "BS_URL", "backup"),
+        ("paas", "PAAS_URL", "paas"),
+    ),
+}
+
+for func, args_list in entry_points.items():
+    for name, url_key, client_name in args_list:
+        func_name = "{}_main".format(name)
+        prog_name = "c2-{}".format(name)
+        globals()[func_name] = prepare_func(func, prog_name, url_key, client_name)

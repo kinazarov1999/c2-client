@@ -22,6 +22,13 @@ install_requires = [
 if sys.version_info[0] == 2 and sys.version_info[1] <= 6:
     install_requires.append("argparse")
 
+console_scripts = [
+    "c2-{0} = c2client.shell:{0}_main".format(name)
+    for name in ("ct", "cw", "ec2", "eks", "as", "elb", "bs", "paas")
+]
+console_scripts.append("c2rc-convert = c2client.c2rc_convert:main")
+
+
 setup(
     name="c2client",
     version=__version__,
@@ -41,20 +48,11 @@ setup(
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 2.6",
         "Programming Language :: Python :: 2.7",
-        "Programming Language :: Python :: 3"
+        "Programming Language :: Python :: 3",
     ],
     install_requires=install_requires,
     packages=find_packages(),
     entry_points={
-        "console_scripts": [
-            "c2-ct = c2client.shell:ct_main",
-            "c2-cw = c2client.shell:cw_main",
-            "c2-ec2 = c2client.shell:ec2_main",
-            "c2-eks = c2client.shell:eks_main",
-            "c2-as = c2client.shell:autoscaling_main",
-            "c2-elb = c2client.shell:elb_main",
-            "c2-bs = c2client.shell:bs_main",
-            "c2rc-convert = c2client.c2rc_convert:main",
-        ]
+        "console_scripts": console_scripts,
     },
 )
