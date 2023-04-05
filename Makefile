@@ -3,8 +3,8 @@
 DIST    ?= epel-6-x86_64
 VENV    ?= .venv
 PIP     ?= $(VENV)/bin/pip
-PYTHON  ?= $(VENV)/bin/python
-PYVER   ?= python2.7
+PYTHON  ?= $(VENV)/bin/python3
+PYVER   ?= python3
 
 PACKAGE := c2-client
 VERSION := $(shell rpm -q --qf "%{version}\n" --specfile $(PACKAGE).spec | head -1)

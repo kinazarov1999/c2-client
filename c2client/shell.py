@@ -1,12 +1,11 @@
 from __future__ import print_function, unicode_literals
 
 import argparse
-import codecs
-import datetime
 import json
 import os
 import ssl
-import sys
+from abc import abstractmethod
+from typing import Dict
 
 import boto
 import boto3
@@ -15,12 +14,7 @@ import inflection
 from functools import wraps
 
 from c2client.compat import get_connection
-from c2client.utils import prettify_xml, from_dot_notation, get_env_var
-
-# Nasty hack to workaround default ascii codec
-if sys.version_info[0] < 3:
-    sys.stdout = codecs.getwriter("utf8")(sys.stdout)
-    sys.stderr = codecs.getwriter("utf8")(sys.stderr)
+from c2client.utils import from_dot_notation, get_env_var, prettify_xml
 
 if hasattr(ssl, "_create_unverified_context"):
     ssl._create_default_https_context = ssl._create_unverified_context
@@ -29,7 +23,8 @@ if os.environ.get("DEBUG"):
     boto.set_stream_logger("c2")
 
 
-def get_boto3_client(service, endpoint, aws_access_key_id, aws_secret_access_key, verify):
+def get_boto3_client(service: str, endpoint: str,
+                     aws_access_key_id: str, aws_secret_access_key: str, verify: bool):
     """Returns boto3 client connection to specified Cloud service."""
 
     return boto3.client(
@@ -42,7 +37,7 @@ def get_boto3_client(service, endpoint, aws_access_key_id, aws_secret_access_key
     )
 
 
-def configure_boto(verify):
+def configure_boto(verify: bool):
     """Configure boto runtime for CROC Cloud"""
 
     if not boto.config.has_section("Boto"):
@@ -52,8 +47,8 @@ def configure_boto(verify):
     boto.config.set("Boto", "https_validate_certificates", str(verify))
 
 
-def exitcode(func):
-    """Wrapper for logging any catched exception."""
+def exitcode(func: callable):
+    """Wrapper for logging any caught exception."""
 
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -64,7 +59,7 @@ def exitcode(func):
     return wrapper
 
 
-def parse_arguments(program):
+def parse_arguments(program: str):
     """
     Parse incoming action and arguments as a dictionary
     for support AWS API requests format.
@@ -76,11 +71,15 @@ def parse_arguments(program):
         "--no-verify-ssl",
         action="store_false",
         help="disable verifying ssl certificate",
-        required=False)
-    parser.add_argument("parameters", nargs="*",
+        required=False
+    )
+    parser.add_argument(
+        "parameters",
+        nargs="*",
         help="Any parameters for the action. "
              "Parameters specified by parameter key and "
-             "parameter value separated by space.")
+             "parameter value separated by space."
+    )
     args = parser.parse_args()
 
     params = args.parameters
@@ -90,147 +89,153 @@ def parse_arguments(program):
     return args.action, parameters, no_verify_ssl
 
 
-@exitcode
-def ec2_main():
-    """Main function for EC2 API Client."""
-
-    action, args, verify = parse_arguments("c2-ec2")
-
-    configure_boto(verify)
-    ec2_endpoint = get_env_var("EC2_URL")
-
-    connection = get_connection("ec2", ec2_endpoint)
-    response = connection.make_request(action, args)
-
-    print(prettify_xml(response.read()))
+# program name : client class name
+_CLIENTS: Dict[str, str] = {}
 
 
-@exitcode
-def cw_main():
-    """Main function for CloudWatch API Client."""
+def get_client_names():
 
-    action, args, verify = parse_arguments("c2-cw")
-
-    configure_boto(verify)
-    cloudwatch_endpoint = get_env_var("AWS_CLOUDWATCH_URL")
-
-    connection = get_connection("cw", cloudwatch_endpoint)
-    response = connection.make_request(action, args)
-
-    print(prettify_xml(response.read()))
+    return _CLIENTS.copy()
 
 
-@exitcode
-def ct_main():
-    """Main function for CloudTrail API Client."""
+class BaseClient:
 
-    action, args, verify = parse_arguments("c2-ct")
+    program_name: str
+    url_key: str
+    client_name: str
 
-    configure_boto(verify)
-    cloudtrail_endpoint = get_env_var("AWS_CLOUDTRAIL_URL")
+    @classmethod
+    @abstractmethod
+    def make_request(cls, method: str, arguments: dict, verify: bool):
+        """Run request."""
 
-    connection = get_connection("ct", cloudtrail_endpoint)
-    if "MaxResults" in args:
-        args["MaxResults"] = int(args["MaxResults"])
-    if "StartTime" in args:
-        args["StartTime"] = int(args["StartTime"])
-    if "EndTime" in args:
-        args["EndTime"] = int(args["EndTime"])
+        raise NotImplementedError
 
-    response = connection.make_request(action, json.dumps(from_dot_notation(args)))
+    @classmethod
+    @exitcode
+    def execute(cls):
+        """Main function for API client."""
 
-    print(json.dumps(response, indent=4, sort_keys=True))
+        action, arguments, verify = parse_arguments(cls.program_name)
 
-
-@exitcode
-def eks_main():
-    """Main function for EKS API Client."""
-
-    action, args, verify = parse_arguments("c2-eks")
-
-    for key, value in args.items():
-        if value.isdigit():
-            args[key] = int(value)
-        elif value.lower() == "true":
-            args[key] = True
-        elif value.lower() == "false":
-            args[key] = False
-
-    eks_endpoint = get_env_var("EKS_URL")
-
-    aws_access_key_id = get_env_var("AWS_ACCESS_KEY_ID")
-    aws_secret_access_key = get_env_var("AWS_SECRET_ACCESS_KEY")
-
-    eks_client = get_boto3_client("eks", eks_endpoint, aws_access_key_id, aws_secret_access_key, verify)
-
-    result = getattr(eks_client, inflection.underscore(action))(**from_dot_notation(args))
-
-    result.pop("ResponseMetadata", None)
-
-    print(json.dumps(result, indent=4, sort_keys=True))
+        cls.make_request(action, arguments, verify)
 
 
-@exitcode
-def autoscaling_main():
-    """Main function for Auto Scaling API Client."""
+class LegacyClient(BaseClient):
 
-    action, args, verify = parse_arguments("c2-as")
+    @classmethod
+    def get_client(cls, verify: bool):
 
-    for key, value in args.items():
-        if value.isdigit():
-            args[key] = int(value)
-        elif value.lower() == "true":
-            args[key] = True
-        elif value.lower() == "false":
-            args[key] = False
+        configure_boto(verify)
+        endpoint = get_env_var(cls.url_key)
 
-    auto_scaling_endpoint = get_env_var("AUTO_SCALING_URL")
+        return get_connection(cls.client_name, endpoint)
 
-    aws_access_key_id = get_env_var("AWS_ACCESS_KEY_ID")
-    aws_secret_access_key = get_env_var("AWS_SECRET_ACCESS_KEY")
+    @classmethod
+    def make_request(cls, method: str, arguments: dict, verify: bool):
 
-    auto_scaling_client = get_boto3_client("autoscaling", auto_scaling_endpoint, aws_access_key_id,
-                                           aws_secret_access_key, verify)
+        connection = cls.get_client(verify)
+        response = connection.make_request(method, arguments)
 
-    result = getattr(auto_scaling_client, inflection.underscore(action))(**from_dot_notation(args))
-
-    result.pop("ResponseMetadata", None)
-
-    print(json.dumps(result, indent=4, sort_keys=True))
+        print(prettify_xml(response.read()))
 
 
-@exitcode
-def elb_main():
-    """Main function for Elastic Load Balancer API Client."""
+class Client(BaseClient):
 
-    action, args, verify = parse_arguments("c2-elb")
+    @classmethod
+    def get_client(cls, verify: bool):
 
-    def serialize_datetime(obj):
-        """Default datetime serializer."""
+        endpoint = get_env_var(cls.url_key)
 
-        if isinstance(obj, datetime.datetime):
-            return str(obj)
+        aws_access_key_id = get_env_var("AWS_ACCESS_KEY_ID")
+        aws_secret_access_key = get_env_var("AWS_SECRET_ACCESS_KEY")
 
-    for key, value in args.items():
-        if value.isdigit():
-            args[key] = int(value)
-        elif value.lower() == "true":
-            args[key] = True
-        elif value.lower() == "false":
-            args[key] = False
+        return get_boto3_client(cls.client_name, endpoint,
+                                aws_access_key_id,
+                                aws_secret_access_key,
+                                verify)
 
-    elb_endpoint = get_env_var("ELB_URL")
+    @classmethod
+    def make_request(cls, method: str, arguments: dict, verify: bool):
 
-    aws_access_key_id = get_env_var("AWS_ACCESS_KEY_ID")
-    aws_secret_access_key = get_env_var("AWS_SECRET_ACCESS_KEY")
+        client = cls.get_client(verify)
 
-    elb_client = get_boto3_client("elbv2", elb_endpoint,
-                                  aws_access_key_id,
-                                  aws_secret_access_key,
-                                  verify)
+        for key, value in arguments.items():
+            if value.isdigit():
+                arguments[key] = int(value)
+            elif value.lower() == "true":
+                arguments[key] = True
+            elif value.lower() == "false":
+                arguments[key] = False
 
-    result = getattr(elb_client, inflection.underscore(action))(**from_dot_notation(args))
+        result = getattr(client, inflection.underscore(method))(**from_dot_notation(arguments))
 
-    result.pop("ResponseMetadata", None)
+        result.pop("ResponseMetadata", None)
 
-    print(json.dumps(result, indent=4, sort_keys=True, default=serialize_datetime))
+        # default=str is required for serializing Datetime objects
+        print(json.dumps(result, indent=4, sort_keys=True, default=str))
+
+
+class EC2Client(LegacyClient):
+
+    program_name = "c2-ec2"
+    url_key = "EC2_URL"
+    client_name = "ec2"
+
+
+class CWClient(LegacyClient):
+
+    program_name = "c2-cw"
+    url_key = "AWS_CLOUDWATCH_URL"
+    client_name = "cw"
+
+
+class CTClient(LegacyClient):
+
+    program_name = "c2-ct"
+    url_key = "AWS_CLOUDTRAIL_URL"
+    client_name = "ct"
+
+    @classmethod
+    def make_request(cls, method: str, arguments: dict, verify: bool):
+
+        connection = cls.get_client(verify)
+
+        if "MaxResults" in arguments:
+            arguments["MaxResults"] = int(arguments["MaxResults"])
+        if "StartTime" in arguments:
+            arguments["StartTime"] = int(arguments["StartTime"])
+        if "EndTime" in arguments:
+            arguments["EndTime"] = int(arguments["EndTime"])
+
+        response = connection.make_request(method, json.dumps(from_dot_notation(arguments)))
+
+        print(json.dumps(response, indent=4, sort_keys=True))
+
+
+class ASClient(Client):
+
+    program_name = "c2-as"
+    url_key = "AUTO_SCALING_URL"
+    client_name = "autoscaling"
+
+
+class BSClient(Client):
+
+    program_name = "c2-bs"
+    url_key = "BACKUP_URL"
+    client_name = "backup"
+
+
+class EKSClient(Client):
+
+    program_name = "c2-eks"
+    url_key = "EKS_URL"
+    client_name = "eks"
+
+
+class ELBClient(Client):
+
+    program_name = "c2-elb"
+    url_key = "ELB_URL"
+    client_name = "elbv2"
